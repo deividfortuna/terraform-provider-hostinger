@@ -35,9 +35,9 @@ resource "hostinger_vps_firewall_activation" "web" {
 ## Attributes Reference
 
 - `id` – Composite ID in the form `firewallId/virtualMachineId`.
-- `is_synced` – Whether the firewall is currently in sync with the virtual machine.
+- `is_synced` – The firewall's global sync state, as reported by the firewall API (not specific to this VM).
 
-> **Limitation:** The Hostinger API does not expose which VM a firewall is active on, so this resource cannot detect if the firewall was deactivated out-of-band. Read only confirms the firewall still exists and reports its sync state.
+> **Drift detection:** On refresh this resource reads the VM's active firewall (`firewall_group_id`). If the firewall was deactivated out-of-band — or a different firewall was activated on the VM (only one can be active at a time) — the activation is removed from state, so the next plan proposes recreating it.
 
 ---
 

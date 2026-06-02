@@ -55,7 +55,7 @@ func resourceHostingerVPSFirewallActivation() *schema.Resource {
 			"is_synced": {
 				Type:        schema.TypeBool,
 				Computed:    true,
-				Description: "Whether the firewall is currently in sync with the virtual machine. Changing rules on the firewall sets this to false until a sync is performed.",
+				Description: "The firewall's global sync state, as reported by the firewall API (not specific to this virtual machine). Changing the firewall's rules sets this to false until a sync is performed.",
 			},
 		},
 	}
@@ -176,6 +176,11 @@ func parseFirewallActivationID(id string) (int, int, error) {
 	if err != nil {
 		return 0, 0, fmt.Errorf("invalid virtual machine ID in %q: %w", id, err)
 	}
+	// The schema requires both IDs to be >= 1; enforce the same bound here so import
+	// and refresh reject invalid IDs early instead of building requests against them.
+	if firewallID < 1 || vmID < 1 {
+		return 0, 0, fmt.Errorf("invalid firewall activation ID %q: firewall and virtual machine IDs must be >= 1", id)
+	}
 	return firewallID, vmID, nil
 }
 
@@ -197,7 +202,10 @@ func (c *HostingerClient) SyncFirewall(firewallID, vmID int) (*FirewallAction, e
 // which share an identical request/response shape.
 func (c *HostingerClient) firewallVMAction(action string, firewallID, vmID int) (*FirewallAction, error) {
 	url := fmt.Sprintf("%s/api/vps/v1/firewall/%d/%s/%d", c.BaseURL, firewallID, action, vmID)
-	req, _ := http.NewRequest("POST", url, nil)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s firewall request: %w", action, err)
+	}
 	c.addStandardHeaders(req)
 
 	resp, err := c.HTTPClient.Do(req)

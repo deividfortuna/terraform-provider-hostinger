@@ -361,9 +361,15 @@ func firewallRuleRequestBody(r FirewallRule) map[string]string {
 
 func (c *HostingerClient) CreateFirewall(name string) (*Firewall, error) {
 	url := c.BaseURL + "/api/vps/v1/firewall"
-	data, _ := json.Marshal(map[string]string{"name": name})
+	data, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal create firewall request: %w", err)
+	}
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create firewall request: %w", err)
+	}
 	c.addStandardHeaders(req)
 
 	resp, err := c.HTTPClient.Do(req)
@@ -386,7 +392,10 @@ func (c *HostingerClient) CreateFirewall(name string) (*Firewall, error) {
 
 func (c *HostingerClient) GetFirewall(id int) (*Firewall, error) {
 	url := fmt.Sprintf("%s/api/vps/v1/firewall/%d", c.BaseURL, id)
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create read firewall request: %w", err)
+	}
 	c.addStandardHeaders(req)
 
 	resp, err := c.HTTPClient.Do(req)
@@ -412,7 +421,10 @@ func (c *HostingerClient) GetFirewall(id int) (*Firewall, error) {
 
 func (c *HostingerClient) DeleteFirewall(id int) error {
 	url := fmt.Sprintf("%s/api/vps/v1/firewall/%d", c.BaseURL, id)
-	req, _ := http.NewRequest("DELETE", url, nil)
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create delete firewall request: %w", err)
+	}
 	c.addStandardHeaders(req)
 
 	resp, err := c.HTTPClient.Do(req)
@@ -430,9 +442,15 @@ func (c *HostingerClient) DeleteFirewall(id int) error {
 
 func (c *HostingerClient) CreateFirewallRule(firewallID int, r FirewallRule) (*FirewallRule, error) {
 	url := fmt.Sprintf("%s/api/vps/v1/firewall/%d/rules", c.BaseURL, firewallID)
-	data, _ := json.Marshal(firewallRuleRequestBody(r))
+	data, err := json.Marshal(firewallRuleRequestBody(r))
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal create firewall rule request: %w", err)
+	}
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create firewall rule request: %w", err)
+	}
 	c.addStandardHeaders(req)
 
 	resp, err := c.HTTPClient.Do(req)
@@ -455,9 +473,15 @@ func (c *HostingerClient) CreateFirewallRule(firewallID int, r FirewallRule) (*F
 
 func (c *HostingerClient) UpdateFirewallRule(firewallID, ruleID int, r FirewallRule) (*FirewallRule, error) {
 	url := fmt.Sprintf("%s/api/vps/v1/firewall/%d/rules/%d", c.BaseURL, firewallID, ruleID)
-	data, _ := json.Marshal(firewallRuleRequestBody(r))
+	data, err := json.Marshal(firewallRuleRequestBody(r))
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal update firewall rule request: %w", err)
+	}
 
-	req, _ := http.NewRequest("PUT", url, bytes.NewBuffer(data))
+	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create update firewall rule request: %w", err)
+	}
 	c.addStandardHeaders(req)
 
 	resp, err := c.HTTPClient.Do(req)
@@ -480,7 +504,10 @@ func (c *HostingerClient) UpdateFirewallRule(firewallID, ruleID int, r FirewallR
 
 func (c *HostingerClient) DeleteFirewallRule(firewallID, ruleID int) error {
 	url := fmt.Sprintf("%s/api/vps/v1/firewall/%d/rules/%d", c.BaseURL, firewallID, ruleID)
-	req, _ := http.NewRequest("DELETE", url, nil)
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create delete firewall rule request: %w", err)
+	}
 	c.addStandardHeaders(req)
 
 	resp, err := c.HTTPClient.Do(req)

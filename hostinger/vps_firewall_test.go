@@ -286,7 +286,8 @@ func TestParseFirewallActivationID(t *testing.T) {
 		t.Errorf("unexpected parse result: fw=%d vm=%d", fwID, vmID)
 	}
 
-	for _, bad := range []string{"bad", "65224", "65224/1268054/3", "abc/1", "1/def"} {
+	// Malformed composites, plus out-of-range IDs the schema forbids (must be >= 1).
+	for _, bad := range []string{"bad", "65224", "65224/1268054/3", "abc/1", "1/def", "0/1", "1/0", "-1/1", "1/-1"} {
 		if _, _, err := parseFirewallActivationID(bad); err == nil {
 			t.Errorf("expected error for invalid ID %q", bad)
 		}
