@@ -180,11 +180,11 @@ func TestFirewallVMActions(t *testing.T) {
 			)
 			switch action {
 			case "activate":
-				res, err = client.ActivateFirewall(65224, 1268054)
+				res, err = client.ActivateFirewall(context.Background(), 65224, 1268054)
 			case "deactivate":
-				res, err = client.DeactivateFirewall(65224, 1268054)
+				res, err = client.DeactivateFirewall(context.Background(), 65224, 1268054)
 			case "sync":
-				res, err = client.SyncFirewall(65224, 1268054)
+				res, err = client.SyncFirewall(context.Background(), 65224, 1268054)
 			}
 			if err != nil {
 				t.Fatalf("expected no error, got %v", err)
@@ -319,8 +319,38 @@ func TestFirewallVMAction_ErrorState(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := newTestClient(server).ActivateFirewall(65224, 1268054); err == nil {
+	if _, err := newTestClient(server).ActivateFirewall(context.Background(), 65224, 1268054); err == nil {
 		t.Fatal("expected an error when the action reports state 'error', got nil")
+	}
+}
+
+func TestFirewallVMAction_PollsPendingState(t *testing.T) {
+	// The action is accepted in a pending state and only settles to "success" on a
+	// follow-up poll of the action endpoint; firewallVMAction must wait for that.
+	var actionPolls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/vps/v1/firewall/65224/activate/1268054":
+			_, _ = w.Write([]byte(`{"id":8123712,"name":"action_name","state":"created"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/vps/v1/virtual-machines/1268054/actions/8123712":
+			actionPolls++
+			_, _ = w.Write([]byte(`{"id":8123712,"name":"action_name","state":"success"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	res, err := newTestClient(server).ActivateFirewall(context.Background(), 65224, 1268054)
+	if err != nil {
+		t.Fatalf("expected no error once the action settles to success, got %v", err)
+	}
+	if res.State != "success" {
+		t.Errorf("expected final state 'success', got %q", res.State)
+	}
+	if actionPolls == 0 {
+		t.Error("expected the action endpoint to be polled at least once")
 	}
 }
 

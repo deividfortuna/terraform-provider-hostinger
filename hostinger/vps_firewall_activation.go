@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
@@ -66,7 +68,7 @@ func resourceHostingerVPSFirewallActivationCreate(ctx context.Context, d *schema
 	firewallID := d.Get("firewall_id").(int)
 	vmID := d.Get("virtual_machine_id").(int)
 
-	if _, err := client.ActivateFirewall(firewallID, vmID); err != nil {
+	if _, err := client.ActivateFirewall(ctx, firewallID, vmID); err != nil {
 		return diag.FromErr(fmt.Errorf("failed to activate firewall %d on VM %d: %w", firewallID, vmID, err))
 	}
 
@@ -131,7 +133,7 @@ func resourceHostingerVPSFirewallActivationUpdate(ctx context.Context, d *schema
 		if err != nil {
 			return diag.FromErr(err)
 		}
-		if _, err := client.SyncFirewall(firewallID, vmID); err != nil {
+		if _, err := client.SyncFirewall(ctx, firewallID, vmID); err != nil {
 			return diag.FromErr(fmt.Errorf("failed to sync firewall %d on VM %d: %w", firewallID, vmID, err))
 		}
 	}
@@ -147,7 +149,7 @@ func resourceHostingerVPSFirewallActivationDelete(ctx context.Context, d *schema
 		return diag.FromErr(err)
 	}
 
-	if _, err := client.DeactivateFirewall(firewallID, vmID); err != nil {
+	if _, err := client.DeactivateFirewall(ctx, firewallID, vmID); err != nil {
 		return diag.FromErr(fmt.Errorf("failed to deactivate firewall %d on VM %d: %w", firewallID, vmID, err))
 	}
 
@@ -186,23 +188,30 @@ func parseFirewallActivationID(id string) (int, int, error) {
 
 // HostingerClient implementations:
 
-func (c *HostingerClient) ActivateFirewall(firewallID, vmID int) (*FirewallAction, error) {
-	return c.firewallVMAction("activate", firewallID, vmID)
+func (c *HostingerClient) ActivateFirewall(ctx context.Context, firewallID, vmID int) (*FirewallAction, error) {
+	return c.firewallVMAction(ctx, "activate", firewallID, vmID)
 }
 
-func (c *HostingerClient) DeactivateFirewall(firewallID, vmID int) (*FirewallAction, error) {
-	return c.firewallVMAction("deactivate", firewallID, vmID)
+func (c *HostingerClient) DeactivateFirewall(ctx context.Context, firewallID, vmID int) (*FirewallAction, error) {
+	return c.firewallVMAction(ctx, "deactivate", firewallID, vmID)
 }
 
-func (c *HostingerClient) SyncFirewall(firewallID, vmID int) (*FirewallAction, error) {
-	return c.firewallVMAction("sync", firewallID, vmID)
+func (c *HostingerClient) SyncFirewall(ctx context.Context, firewallID, vmID int) (*FirewallAction, error) {
+	return c.firewallVMAction(ctx, "sync", firewallID, vmID)
 }
+
+// firewallActionTimeout bounds how long firewallVMAction waits for an accepted
+// activate/deactivate/sync action to settle before giving up. A sync can take up to
+// ~8 minutes, so this is set well above that; it stays within Terraform's default
+// 20-minute resource operation timeout.
+const firewallActionTimeout = 10 * time.Minute
 
 // firewallVMAction performs one of the activate/deactivate/sync firewall operations,
-// which share an identical request/response shape.
-func (c *HostingerClient) firewallVMAction(action string, firewallID, vmID int) (*FirewallAction, error) {
+// which share an identical request/response shape, and waits for the accepted action
+// to settle before returning.
+func (c *HostingerClient) firewallVMAction(ctx context.Context, action string, firewallID, vmID int) (*FirewallAction, error) {
 	url := fmt.Sprintf("%s/api/vps/v1/firewall/%d/%s/%d", c.BaseURL, firewallID, action, vmID)
-	req, err := http.NewRequest("POST", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create %s firewall request: %w", action, err)
 	}
@@ -223,11 +232,65 @@ func (c *HostingerClient) firewallVMAction(action string, firewallID, vmID int) 
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
 	}
-	// A 200 only means the action was accepted; the action itself can still report
-	// failure via its state (success|error|delayed|sent|created). Surface a hard
-	// error so a failed activate/deactivate/sync is not reported as a successful apply.
-	if res.State == "error" {
-		return &res, fmt.Errorf("%s firewall action %d reported state %q", action, res.ID, res.State)
+	// A 200 only means the action was accepted; the action itself runs asynchronously
+	// and reports progress via its state (success|error|delayed|sent|created). Wait for
+	// it to reach "success" so a still-pending action is not reported as a finished apply
+	// (which would make the follow-up Read see the firewall not yet active on the VM and
+	// drop the resource from state), and so a failed action surfaces as a hard error.
+	return c.waitForFirewallAction(ctx, action, vmID, &res)
+}
+
+// waitForFirewallAction polls a firewall action until it reaches a terminal state:
+// "success" returns the action, "error" returns an error, and the pending states
+// (created/sent/delayed) are re-fetched from the action endpoint until they settle
+// or firewallActionTimeout elapses. The caller's context is honoured, so polling stops
+// promptly when Terraform cancels the operation.
+func (c *HostingerClient) waitForFirewallAction(ctx context.Context, action string, vmID int, current *FirewallAction) (*FirewallAction, error) {
+	err := retry.RetryContext(ctx, firewallActionTimeout, func() *retry.RetryError {
+		switch current.State {
+		case "success":
+			return nil
+		case "error":
+			return retry.NonRetryableError(fmt.Errorf("%s firewall action %d reported state %q", action, current.ID, current.State))
+		}
+		// Pending (created/sent/delayed): re-fetch the action and retry until it settles.
+		next, err := c.GetVMAction(ctx, vmID, current.ID)
+		if err != nil {
+			return retry.NonRetryableError(fmt.Errorf("failed to poll %s firewall action %d: %w", action, current.ID, err))
+		}
+		current = next
+		return retry.RetryableError(fmt.Errorf("%s firewall action %d still in state %q", action, current.ID, current.State))
+	})
+	if err != nil {
+		return current, err
+	}
+	return current, nil
+}
+
+// GetVMAction retrieves the current state of an asynchronous action previously
+// submitted against a virtual machine.
+func (c *HostingerClient) GetVMAction(ctx context.Context, vmID, actionID int) (*FirewallAction, error) {
+	url := fmt.Sprintf("%s/api/vps/v1/virtual-machines/%d/actions/%d", c.BaseURL, vmID, actionID)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create get action request: %w", err)
+	}
+	c.addStandardHeaders(req)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get action failed (HTTP %d): %s", resp.StatusCode, msg)
+	}
+
+	var res FirewallAction
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
 	}
 	return &res, nil
 }
